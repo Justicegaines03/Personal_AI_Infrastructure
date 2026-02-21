@@ -25,6 +25,7 @@
 import { mkdirSync, existsSync, readFileSync, writeFileSync, symlinkSync, unlinkSync, lstatSync } from 'fs';
 import { join } from 'path';
 import { getPSTComponents, getISOTimestamp } from './lib/time';
+import { generatePRDTemplate, generatePRDFilename } from './lib/prd-template';
 interface HookInput {
   session_id: string;
   prompt?: string;
@@ -38,6 +39,7 @@ interface CurrentWork {
   task_title: string;
   task_count: number;
   created_at: string;
+  prd_path?: string;
 }
 
 interface PromptClassification {
@@ -50,7 +52,11 @@ interface PromptClassification {
 const BASE_DIR = process.env.PAI_DIR || join(process.env.HOME!, '.claude');
 const WORK_DIR = join(BASE_DIR, 'MEMORY', 'WORK');
 const STATE_DIR = join(BASE_DIR, 'MEMORY', 'STATE');
-const CURRENT_WORK_FILE = join(STATE_DIR, 'current-work.json');
+// Session-scoped state files prevent parallel sessions from overwriting each other
+function currentWorkFile(sessionId?: string): string {
+  if (sessionId) return join(STATE_DIR, `current-work-${sessionId}.json`);
+  return join(STATE_DIR, 'current-work.json'); // legacy fallback
+}
 
 // No more inference — simple heuristic classification
 
@@ -64,10 +70,18 @@ async function readStdinWithTimeout(timeout: number = 5000): Promise<string> {
   });
 }
 
-function readCurrentWork(): CurrentWork | null {
+function readCurrentWork(sessionId?: string): CurrentWork | null {
   try {
-    if (!existsSync(CURRENT_WORK_FILE)) return null;
-    return JSON.parse(readFileSync(CURRENT_WORK_FILE, 'utf-8'));
+    // Try session-scoped file first, fall back to legacy
+    const scopedFile = sessionId ? currentWorkFile(sessionId) : null;
+    if (scopedFile && existsSync(scopedFile)) {
+      return JSON.parse(readFileSync(scopedFile, 'utf-8'));
+    }
+    const legacyFile = currentWorkFile();
+    if (existsSync(legacyFile)) {
+      return JSON.parse(readFileSync(legacyFile, 'utf-8'));
+    }
+    return null;
   } catch {
     return null;
   }
@@ -75,7 +89,8 @@ function readCurrentWork(): CurrentWork | null {
 
 function writeCurrentWork(state: CurrentWork): void {
   if (!existsSync(STATE_DIR)) mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(CURRENT_WORK_FILE, JSON.stringify(state, null, 2), 'utf-8');
+  // Write to session-scoped file
+  writeFileSync(currentWorkFile(state.session_id), JSON.stringify(state, null, 2), 'utf-8');
 }
 
 function slugify(text: string, maxLen: number = 40): string {
@@ -110,6 +125,7 @@ function createSessionDirectory(sessionDirName: string, sessionId: string, title
 title: "${title}"
 session_id: "${sessionId}"
 created_at: "${timestamp}"
+completed_at: null
 status: "ACTIVE"
 `;
   writeFileSync(join(sessionPath, 'META.yaml'), meta, 'utf-8');
@@ -127,7 +143,7 @@ function createTaskDirectory(
   title: string,
   effort: string,
   prompt: string
-): string {
+): { taskDirName: string; prdPath: string } {
   const taskId = String(taskNumber).padStart(3, '0');
   const taskSlug = slugify(title);
   const taskDirName = `${taskId}_${taskSlug}`;
@@ -199,6 +215,17 @@ _Important observations during execution..._
   };
   writeFileSync(join(taskPath, 'ISC.json'), JSON.stringify(isc, null, 2), 'utf-8');
 
+  // Task PRD file — stub for model to populate during Algorithm phases
+  const prdSlug = taskSlug.substring(0, 40);
+  const prdFilename = generatePRDFilename(prdSlug);
+  const prdContent = generatePRDTemplate({
+    title,
+    slug: prdSlug,
+    effortLevel: effort,
+    prompt,
+  });
+  writeFileSync(join(taskPath, prdFilename), prdContent, 'utf-8');
+
   // Update 'current' symlink
   const currentLink = join(sessionPath, 'tasks', 'current');
   try {
@@ -209,7 +236,8 @@ _Important observations during execution..._
   symlinkSync(taskDirName, currentLink);
 
   console.error(`[AutoWork] Created task: ${taskPath}`);
-  return taskDirName;
+  console.error(`[AutoWork] Created PRD: ${prdFilename}`);
+  return { taskDirName, prdPath: join(taskPath, prdFilename) };
 }
 
 /**
@@ -253,7 +281,7 @@ async function main() {
 
     if (!existsSync(WORK_DIR)) mkdirSync(WORK_DIR, { recursive: true });
 
-    let currentWork = readCurrentWork();
+    let currentWork = readCurrentWork(sessionId);
     const isExistingSession = currentWork && currentWork.session_id === sessionId;
 
     const classification = classifyPrompt(prompt, !!isExistingSession);
@@ -270,7 +298,7 @@ async function main() {
       const sessionDirName = generateSessionDirName(title);
       const sessionPath = createSessionDirectory(sessionDirName, sessionId, title);
 
-      const taskDirName = createTaskDirectory(
+      const { taskDirName, prdPath } = createTaskDirectory(
         sessionPath,
         1,
         title,
@@ -285,6 +313,7 @@ async function main() {
         task_title: title,
         task_count: 1,
         created_at: getISOTimestamp(),
+        prd_path: prdPath,
       };
       writeCurrentWork(currentWork);
 
@@ -295,7 +324,7 @@ async function main() {
       const newTaskNumber = currentWork!.task_count + 1;
       const title = classification.title || prompt.substring(0, 50);
 
-      const taskDirName = createTaskDirectory(
+      const { taskDirName, prdPath } = createTaskDirectory(
         sessionPath,
         newTaskNumber,
         title,
@@ -306,6 +335,7 @@ async function main() {
       currentWork!.current_task = taskDirName;
       currentWork!.task_title = title;
       currentWork!.task_count = newTaskNumber;
+      currentWork!.prd_path = prdPath;
       writeCurrentWork(currentWork!);
 
       console.error(`[AutoWork] New task in session: ${taskDirName}`);
