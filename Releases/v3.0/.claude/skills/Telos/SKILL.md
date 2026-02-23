@@ -26,7 +26,7 @@ description: Life OS and project analysis. USE WHEN TELOS, life goals, projects,
 
 **TELOS** (Telic Evolution and Life Operating System) is a comprehensive context-gathering system with two applications:
 
-1. **Personal TELOS** - {PRINCIPAL.NAME}'s life context system (beliefs, goals, lessons, wisdom) at `~/.claude/skills/PAI/USER/TELOS/`
+1. **Personal TELOS** - {PRINCIPAL.NAME}'s life context system (beliefs, goals, lessons, wisdom) at `~/.claude/context/life/telos/`
 2. **Project TELOS** - Analysis framework for organizations/projects (relationships, dependencies, goals, progress)
 
 
@@ -103,7 +103,7 @@ User: "write a TELOS report for Acme Corp"
 
 | User Request | Context | Location |
 |--------------|---------|----------|
-| "my TELOS", "my goals", "my beliefs", "add to TELOS" | Personal TELOS | `~/.claude/skills/PAI/USER/TELOS/` |
+| "my TELOS", "my goals", "my beliefs", "add to TELOS" | Personal TELOS | `~/.claude/context/life/telos/` |
 | "Alma", "TELOSAPP", "analyze [project]", "dashboard for" | Project TELOS | User-specified directory |
 | "analyze ~/path/to/project" | Project TELOS | Specified path |
 
@@ -115,14 +115,14 @@ User: "write a TELOS report for Acme Corp"
 
 **CRITICAL PATH:** All personal TELOS files are located at:
 ```
-~/.claude/skills/PAI/USER/TELOS/
+~/.claude/context/life/telos/
 ```
 
-Personal TELOS lives in the CORE USER directory, NOT directly under the Telos skill directory.
+Personal TELOS lives in the local personal context tree, NOT directly under the Telos skill directory.
 
 ## Personal TELOS Framework
 
-All files located in `~/.claude/skills/PAI/USER/TELOS/`:
+All files located in `~/.claude/context/life/telos/`:
 
 ### Core Philosophy
 - **TELOS.md** - Main framework document
@@ -133,7 +133,7 @@ All files located in `~/.claude/skills/PAI/USER/TELOS/`:
 ### Life Data
 - **BOOKS.md** - Favorite books
 - **MOVIES.md** - Favorite movies
-- **LEARNED.md** - Lessons learned over time
+- **LESSONS.md** - Lessons learned over time
 - **WRONG.md** - Things {PRINCIPAL.NAME} was wrong about (growth tracking)
 
 ### Mental Models
@@ -159,11 +159,11 @@ All files located in `~/.claude/skills/PAI/USER/TELOS/`:
 
 ```bash
 # View specific file
-read ~/.claude/skills/PAI/USER/TELOS/GOALS.md
-read ~/.claude/skills/PAI/USER/TELOS/BELIEFS.md
+read ~/.claude/context/life/telos/GOALS.md
+read ~/.claude/context/life/telos/BELIEFS.md
 
 # View recent updates
-read ~/.claude/skills/PAI/USER/TELOS/updates.md
+read ~/.claude/context/life/telos/updates.md
 ```
 
 ### Update Personal TELOS
@@ -179,7 +179,9 @@ The workflow provides:
 - Proper formatting and structure
 
 **Valid files for updates:**
-BELIEFS.md, BOOKS.md, CHALLENGES.md, FRAMES.md, GOALS.md, LEARNED.md, MISSION.md, MODELS.md, MOVIES.md, NARRATIVES.md, PREDICTIONS.md, PROBLEMS.md, PROJECTS.md, STRATEGIES.md, TELOS.md, TRAUMAS.md, WISDOM.md, WRONG.md
+BELIEFS.md, BOOKS.md, CHALLENGES.md, FRAMES.md, GOALS.md, LESSONS.md, MISSION.md, MODELS.md, MOVIES.md, NARRATIVES.md, PREDICTIONS.md, PROBLEMS.md, PROJECTS.md, STRATEGIES.md, TELOS.md, TRAUMAS.md, WISDOM.md, WRONG.md
+
+**Optional but recommended personal snapshot file:** `STATUS.md`
 
 ---
 
@@ -374,7 +376,7 @@ Engineer 10: Integration and testing
 ## Key Principles
 
 1. **Dual Context** - Handles both personal and project TELOS seamlessly
-   - Personal TELOS: `~/.claude/skills/PAI/USER/TELOS/` (in CORE USER directory)
+   - Personal TELOS: `~/.claude/context/life/telos/` (in local personal context)
    - Project TELOS: User-specified directories
 2. **Auto-Detection** - Determines context from user question
 3. **Flexible Discovery** - Finds files regardless of structure
@@ -388,4 +390,4 @@ Engineer 10: Integration and testing
 
 **TELOS is {PRINCIPAL.NAME}'s life operating system AND project analysis framework. One skill, two powerful contexts.**
 
-**Remember:** Personal TELOS files live at `~/.claude/skills/PAI/USER/TELOS/` (in the CORE USER directory)
+**Remember:** Personal TELOS files live at `~/.claude/context/life/telos/` (in the local personal context directory)
