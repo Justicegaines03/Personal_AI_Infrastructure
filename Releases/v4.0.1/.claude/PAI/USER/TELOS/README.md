@@ -2,6 +2,16 @@
 
 Your personal life operating system. Telos tracks goals, beliefs, challenges, and wisdom to help PAI understand what matters to you.
 
+## Personal Context Added
+
+This Telos now includes a Gene Keys-centered context layer and regulation guidance:
+
+- `GENE_KEYS_PROFILE.md` — core sequence and interpretation context
+- `GOALS.md` — current mission and multi-domain goals
+- `CHALLENGES.md` — anxiety/overload patterns and support protocol
+- `BELIEFS.md` — decision principles and values
+- `WISDOM.md` — practical guidance and regulation steps
+
 ## Suggested Files
 
 | File | Purpose |
