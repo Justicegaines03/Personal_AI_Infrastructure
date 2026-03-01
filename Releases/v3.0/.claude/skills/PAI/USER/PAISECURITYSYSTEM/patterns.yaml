@@ -10,8 +10,8 @@
 # The AI must use AskUserQuestion for confirm-category operations BEFORE
 # attempting them. The hook serves as a backup safety net.
 ---
-version: "1.1"
-last_updated: "2026-02-14"
+version: "1.2"
+last_updated: "2026-02-23"
 
 # Philosophy: Safe but functional by default
 # Block catastrophic operations, confirm dangerous ones, allow everything else
@@ -104,6 +104,8 @@ bash:
       reason: "Repository deletion"
     - pattern: "gh repo edit --visibility public"
       reason: "Repository exposure"
+    - pattern: "tailscale funnel"
+      reason: "Public internet exposure (Funnel) is out of scope for personal dogfooding"
 
   # CONFIRM - Dangerous but sometimes legitimate (LOGGED + prompt)
   # AI should use AskUserQuestion before attempting (see RULE P3)
@@ -119,6 +121,18 @@ bash:
       reason: "Force push can lose commits"
     - pattern: "git reset --hard"
       reason: "Loses uncommitted changes"
+    - pattern: "git push(\\s|$)"
+      reason: "Git push requires explicit review for pillar repos"
+
+    # OpenClaw / remote exposure / channel control
+    - pattern: "openclaw config set"
+      reason: "OpenClaw config changes affect gateway/channel security posture"
+    - pattern: "openclaw channels add bluebubbles"
+      reason: "BlueBubbles channel configuration affects iMessage ingress and auth"
+    - pattern: "openclaw pairing approve"
+      reason: "Pairing approval changes who can control the gateway"
+    - pattern: "tailscale serve"
+      reason: "Tailscale Serve changes remote access surface"
 
     # Cloud - AWS
     - pattern: "aws s3 rm.*--recursive"
@@ -158,6 +172,26 @@ bash:
     - pattern: "TRUNCATE"
       reason: "Table data destruction"
 
+    # Deploy / publish / release workflows (personal venture + client risk)
+    - pattern: "npm publish"
+      reason: "Package publish is external and potentially irreversible"
+    - pattern: "pnpm publish"
+      reason: "Package publish is external and potentially irreversible"
+    - pattern: "bun publish"
+      reason: "Package publish is external and potentially irreversible"
+    - pattern: "gh release create"
+      reason: "Release publishing is external and potentially irreversible"
+    - pattern: "wrangler deploy"
+      reason: "Deployment affects live infrastructure"
+    - pattern: "fly deploy"
+      reason: "Deployment affects live infrastructure"
+    - pattern: "railway up"
+      reason: "Deployment affects live infrastructure"
+    - pattern: "vercel --prod"
+      reason: "Production deploy affects live systems"
+    - pattern: "netlify deploy.*--prod"
+      reason: "Production deploy affects live systems"
+
   # ALERT - Suspicious but allowed (LOGGED, no block)
   alert:
     - pattern: "curl.*\\|.*sh"
@@ -179,38 +213,116 @@ paths:
     - "~/.ssh/*.pem"
     - "~/.aws/credentials"
     - "~/.gnupg/private*"
+    - "~/.openclaw/credentials/**"
+    - "~/.openclaw/agents/**/agent/auth-profiles.json"
     - "**/credentials.json"
     - "**/service-account*.json"
 
   # READ ONLY - Can read but cannot modify or delete
   readOnly:
     - "/etc/**"
+    - "~/Library/Messages/chat.db"
+    - "~/Library/Messages/Attachments/**"
 
   # CONFIRM WRITE - Can read freely, writing requires confirmation
   confirmWrite:
     - "~/.claude/settings.json"
+    - "~/.claude/hooks/SecurityValidator.hook.ts"
+    - "~/.claude/skills/PAI/USER/AISTEERINGRULES.md"
+    - "~/.claude/skills/PAI/USER/PAISECURITYSYSTEM/patterns.yaml"
+    - "~/.openclaw/openclaw.json"
+    - "~/.openclaw/workspace/AGENTS.md"
+    - "~/.openclaw/workspace/BOOTSTRAP.md"
     - "**/.env"
     - "**/.env.*"
     - "~/.ssh/*"
+    - "/Users/justicegaines/.claude/context/projects/OpenClaw_NIST-AI-RMF_Compliance/**"
+    - "/Users/justicegaines/.claude/context/projects/Personal_AI_Infrastructure/**"
+    - "/Users/justicegaines/.claude/context/projects/SOC-Risk-Engine/**"
+    - "/Users/justicegaines/.claude/context/projects/WYN-automation/**"
+    - "/Users/justicegaines/Library/CloudStorage/OneDrive-UniversityOfOregon/01 Personal/College/01 Classes/UO/03 Classes_FA2025/CS212/Work/**"
 
   # NO DELETE - Can read and modify but cannot delete
   noDelete:
     - "~/.claude/hooks/**"
     - "~/.claude/skills/PAI/**"
+    - "~/.openclaw/**"
     - ".git/**"
     - "LICENSE*"
     - "README.md"
+    - "/Users/justicegaines/.claude/context/projects/OpenClaw_NIST-AI-RMF_Compliance/**"
+    - "/Users/justicegaines/.claude/context/projects/Personal_AI_Infrastructure/**"
+    - "/Users/justicegaines/.claude/context/projects/SOC-Risk-Engine/**"
+    - "/Users/justicegaines/.claude/context/projects/WYN-automation/**"
 
 # ========================================
-# SPECIAL PROJECT RULES (customize for your projects)
+# SPECIAL PROJECT RULES (8-domain dogfooding profile)
 # ========================================
-# Add project-specific rules here. Example:
-#
-# projects:
-#   my-project:
-#     path: "${PROJECTS_DIR}/my-project"
-#     rules:
-#       - action: "block_git_push"
-#         reason: "Deploy via wrangler only, GitHub has README only"
-#       - action: "allow_wrangler_deploy"
-#         reason: "This is the correct deployment method"
+projects:
+  uo_degree:
+    path: "/Users/justicegaines/Library/CloudStorage/OneDrive-UniversityOfOregon/01 Personal/College/01 Classes/UO/03 Classes_FA2025/CS212/Work"
+    rules:
+      - action: "confirm_write"
+        reason: "Coursework/submission files require explicit confirmation before edits"
+      - action: "confirm_delete"
+        reason: "Coursework deletions risk academic progress"
+
+  cyber_security_club:
+    path: "/Users/justicegaines/.claude/context/projects/SOC-Risk-Engine"
+    rules:
+      - action: "confirm_write"
+        reason: "Club/shared artifacts should be reviewed before editing"
+      - action: "confirm_bash_publish"
+        reason: "Club/public releases or pushes require explicit review"
+
+  running_club:
+    path: "~/Documents/RunningClub-REPLACE_PATH"
+    rules:
+      - action: "confirm_write"
+        reason: "Running Club coordination docs require explicit review"
+      - action: "confirm_bash_external_send"
+        reason: "External sends/registrations require explicit confirmation"
+
+  uo_tsoc_job:
+    path: "/Users/justicegaines/.claude/context/projects/SOC-Risk-Engine"
+    rules:
+      - action: "confirm_write"
+        reason: "TSOC stakeholder-facing artifacts require explicit confirmation"
+      - action: "confirm_bash_deploy"
+        reason: "TSOC deployments/pushes require explicit confirmation"
+
+  bizcare_compliance:
+    path: "~/Documents/BizCare-REPLACE_PATH"
+    rules:
+      - action: "confirm_write"
+        reason: "BizCare client/compliance files are high-risk and require explicit confirmation"
+      - action: "block_delete"
+        reason: "Do not delete BizCare client/compliance artifacts via OpenClaw"
+      - action: "confirm_bash_deploy"
+        reason: "BizCare publish/deploy actions require explicit confirmation"
+
+  oic_venture_openclaw:
+    path: "/Users/justicegaines/.claude/context/projects/OpenClaw_NIST-AI-RMF_Compliance"
+    rules:
+      - action: "confirm_write"
+        reason: "OIC venture prototype changes require explicit confirmation in mobile workflows"
+      - action: "confirm_bash_deploy"
+        reason: "Prototype deploy/publish actions require explicit confirmation"
+
+  wyn_automation:
+    path: "/Users/justicegaines/.claude/context/projects/WYN-automation"
+    rules:
+      - action: "confirm_write"
+        reason: "WYN client automation changes require explicit confirmation"
+      - action: "confirm_bash_deploy"
+        reason: "WYN deploy/publish actions require explicit confirmation"
+
+  scorp_backbone:
+    path: "~/Documents/Cybersecurity-RD-Group-SCorp-REPLACE_PATH"
+    rules:
+      - action: "confirm_write"
+        reason: "S Corp financial/admin artifacts require explicit confirmation"
+      - action: "block_delete"
+        reason: "Do not delete S Corp records via OpenClaw"
+      - action: "confirm_bash_finance"
+        reason: "Finance/tax/payment operations require explicit confirmation"

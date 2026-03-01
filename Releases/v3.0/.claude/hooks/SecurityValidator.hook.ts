@@ -144,9 +144,35 @@ interface HookInput {
   tool_input: Record<string, unknown> | string;
 }
 
+type HookDecisionAction = 'allow' | 'block' | 'confirm' | 'alert';
+
 interface Pattern {
   pattern: string;
   reason: string;
+}
+
+type ProjectRuleAction =
+  | 'confirm_write'
+  | 'block_write'
+  | 'confirm_read'
+  | 'block_read'
+  | 'confirm_delete'
+  | 'block_delete'
+  | 'confirm_bash'
+  | 'block_bash'
+  | 'confirm_bash_publish'
+  | 'confirm_bash_deploy'
+  | 'confirm_bash_external_send'
+  | 'confirm_bash_finance';
+
+interface ProjectRule {
+  action: ProjectRuleAction | string;
+  reason: string;
+}
+
+interface ProjectConfig {
+  path: string;
+  rules: ProjectRule[];
 }
 
 interface PatternsConfig {
@@ -166,10 +192,7 @@ interface PatternsConfig {
     confirmWrite: string[];
     noDelete: string[];
   };
-  projects: Record<string, {
-    path: string;
-    rules: Array<{ action: string; reason: string }>;
-  }>;
+  projects: Record<string, ProjectConfig>;
 }
 
 // ========================================
@@ -272,11 +295,19 @@ function matchesPattern(command: string, pattern: string): boolean {
 }
 
 function expandPath(path: string): string {
+  let expanded = path;
+
+  // Expand common template vars used in local pattern configs
+  expanded = expanded.replace(/\$\{HOME\}/g, homedir());
+  expanded = expanded.replace(/\$\{OPENCLAW_HOME\}/g, homedir());
+  expanded = expanded.replace(/\$\{PROJECTS_DIR\}/g, join(homedir(), 'Projects'));
+
   // Expand ~ to home directory
-  if (path.startsWith('~')) {
-    return path.replace('~', homedir());
+  if (expanded.startsWith('~')) {
+    return expanded.replace('~', homedir());
   }
-  return path;
+
+  return expanded;
 }
 
 function matchesPathPattern(filePath: string, pattern: string): boolean {
@@ -306,11 +337,335 @@ function matchesPathPattern(filePath: string, pattern: string): boolean {
          expandedPath.startsWith(expandedPattern.endsWith('/') ? expandedPattern : expandedPattern + '/');
 }
 
+function normalizeForPathCompare(value: string): string {
+  return expandPath(value).replace(/\/+$/, '');
+}
+
+function getProjectEntries(): Array<[string, ProjectConfig]> {
+  const patterns = loadPatterns();
+  return Object.entries(patterns.projects ?? {}).filter(([, cfg]) => cfg && typeof cfg.path === 'string');
+}
+
+function getProjectBasename(projectPath: string): string {
+  const normalized = normalizeForPathCompare(projectPath);
+  const parts = normalized.split('/').filter(Boolean);
+  return parts[parts.length - 1] ?? normalized;
+}
+
+interface ProjectPathMatch {
+  key: string;
+  config: ProjectConfig;
+}
+
+function findMatchingProjectsForPath(filePath: string): ProjectPathMatch[] {
+  const matches: ProjectPathMatch[] = [];
+
+  for (const [key, cfg] of getProjectEntries()) {
+    if (!cfg.path) continue;
+    try {
+      if (matchesPathPattern(filePath, cfg.path)) {
+        matches.push({ key, config: cfg });
+      }
+    } catch {
+      // Ignore malformed project path patterns (fail-open)
+    }
+  }
+
+  return matches;
+}
+
+const BASH_PUBLISH_PATTERN =
+  /\b(?:git\s+push|npm\s+publish|pnpm\s+publish|bun\s+publish|gh\s+release\s+create)\b/i;
+const BASH_DEPLOY_PATTERN =
+  /\b(?:deploy\b|wrangler\s+deploy|fly\s+deploy|railway\s+up|vercel(?:\s+--prod)?|netlify\s+deploy|terraform\s+apply|kubectl\s+apply)\b/i;
+const BASH_EXTERNAL_SEND_PATTERN =
+  /\b(?:send|email|sms|mail|twilio|message)\b/i;
+const BASH_FINANCE_PATTERN =
+  /\b(?:payroll|tax|stripe|quickbooks|gusto|bill(?:ing)?|payment|distribut(?:e|ion))\b/i;
+
+function projectRuleAppliesToBash(command: string, action: string): boolean {
+  switch (action) {
+    case 'confirm_bash':
+    case 'block_bash':
+      return true;
+    case 'confirm_bash_publish':
+      return BASH_PUBLISH_PATTERN.test(command);
+    case 'confirm_bash_deploy':
+      return BASH_DEPLOY_PATTERN.test(command);
+    case 'confirm_bash_external_send':
+      return BASH_EXTERNAL_SEND_PATTERN.test(command);
+    case 'confirm_bash_finance':
+      return BASH_FINANCE_PATTERN.test(command);
+    default:
+      return false;
+  }
+}
+
+function commandTargetsProject(command: string, projectPath: string): boolean {
+  const expandedPath = normalizeForPathCompare(projectPath);
+  const basename = getProjectBasename(projectPath);
+  const compactCommand = command.replace(/\s+/g, ' ').trim();
+
+  if (expandedPath && compactCommand.includes(expandedPath)) return true;
+  if (basename && new RegExp(`\\b${basename.replace(/[.*+?^${}()|[\\]\\\\]/g, '\\\\$&')}\\b`, 'i').test(compactCommand)) {
+    return true;
+  }
+
+  return false;
+}
+
+function applyProjectPathRules(
+  filePath: string,
+  action: PathAction,
+): { action: 'allow' | 'block' | 'confirm'; reason?: string } {
+  for (const match of findMatchingProjectsForPath(filePath)) {
+    for (const rule of match.config.rules ?? []) {
+      const ruleAction = rule.action;
+      if (action === 'read' && ruleAction === 'block_read') {
+        return { action: 'block', reason: `[${match.key}] ${rule.reason}` };
+      }
+      if (action === 'read' && ruleAction === 'confirm_read') {
+        return { action: 'confirm', reason: `[${match.key}] ${rule.reason}` };
+      }
+      if (action === 'write' && ruleAction === 'block_write') {
+        return { action: 'block', reason: `[${match.key}] ${rule.reason}` };
+      }
+      if (action === 'write' && ruleAction === 'confirm_write') {
+        return { action: 'confirm', reason: `[${match.key}] ${rule.reason}` };
+      }
+      if (action === 'delete' && ruleAction === 'block_delete') {
+        return { action: 'block', reason: `[${match.key}] ${rule.reason}` };
+      }
+      if (action === 'delete' && ruleAction === 'confirm_delete') {
+        return { action: 'confirm', reason: `[${match.key}] ${rule.reason}` };
+      }
+    }
+  }
+
+  return { action: 'allow' };
+}
+
+function applyProjectBashRules(command: string): { action: HookDecisionAction; reason?: string } {
+  for (const [key, cfg] of getProjectEntries()) {
+    if (!commandTargetsProject(command, cfg.path)) continue;
+
+    for (const rule of cfg.rules ?? []) {
+      const action = rule.action;
+      if (!projectRuleAppliesToBash(command, action)) continue;
+
+      if (action === 'block_bash') {
+        return { action: 'block', reason: `[${key}] ${rule.reason}` };
+      }
+
+      if (action.startsWith('confirm_bash')) {
+        return { action: 'confirm', reason: `[${key}] ${rule.reason}` };
+      }
+    }
+  }
+
+  return { action: 'allow' };
+}
+
+function validateOpenClawBashCommand(command: string): { action: HookDecisionAction; reason?: string } {
+  if (/\btailscale\s+funnel\b/i.test(command)) {
+    return { action: 'block', reason: 'Tailscale Funnel is out of scope for Phase 1 (public exposure risk)' };
+  }
+
+  if (/\bopenclaw\s+config\s+set\b/i.test(command)) {
+    if (/\bgateway\.bind\s+(?:lan|auto|custom|tailnet)\b/i.test(command)) {
+      return { action: 'confirm', reason: 'Changing gateway.bind widens or alters network exposure' };
+    }
+    if (/\bchannels\.bluebubbles\.dmPolicy\s+open\b/i.test(command)) {
+      return { action: 'block', reason: 'BlueBubbles dmPolicy=open is not allowed in personal dogfooding baseline' };
+    }
+    if (/\bgateway\.tailscale\.mode\s+funnel\b/i.test(command)) {
+      return { action: 'block', reason: 'gateway.tailscale.mode=funnel is not allowed in Phase 1' };
+    }
+
+    return { action: 'confirm', reason: 'OpenClaw config mutation affects gateway/channel security posture' };
+  }
+
+  if (/\bopenclaw\s+channels\b/i.test(command)) {
+    return { action: 'confirm', reason: 'OpenClaw channel operations affect messaging ingress/egress behavior' };
+  }
+
+  if (/(^|\s)(sed|perl|python|node|jq).*(~\/\.openclaw\/openclaw\.json|\/\.openclaw\/openclaw\.json)/i.test(command)) {
+    return { action: 'confirm', reason: 'Direct mutation of ~/.openclaw/openclaw.json requires explicit review' };
+  }
+
+  return { action: 'allow' };
+}
+
+function validateOpenClawPath(filePath: string, action: PathAction): { action: 'allow' | 'block' | 'confirm'; reason?: string } {
+  const normalized = normalizeForPathCompare(filePath);
+  const openclawRoot = normalizeForPathCompare(join(homedir(), '.openclaw'));
+
+  if (!normalized.startsWith(openclawRoot)) {
+    return { action: 'allow' };
+  }
+
+  if (normalized.startsWith(normalizeForPathCompare(join(homedir(), '.openclaw', 'credentials')))) {
+    return {
+      action: 'block',
+      reason: 'OpenClaw credentials are protected and cannot be read/modified via this hook path',
+    };
+  }
+
+  if (action === 'write' || action === 'delete') {
+    return {
+      action: 'confirm',
+      reason: 'OpenClaw state/config changes require explicit confirmation in personal dogfooding mode',
+    };
+  }
+
+  return { action: 'allow' };
+}
+
+function classifyHitlOperation(params: {
+  tool: 'Bash' | 'Edit' | 'Write';
+  command?: string;
+  filePath?: string;
+}): { required: boolean; operationType?: string; projectKey?: string } {
+  if (params.filePath) {
+    const matches = findMatchingProjectsForPath(params.filePath);
+    for (const match of matches) {
+      if (['bizcare_compliance', 'scorp_backbone', 'wyn_automation', 'uo_tsoc_job', 'oic_venture_openclaw'].includes(match.key)) {
+        return { required: true, operationType: `${params.tool.toLowerCase()}.write`, projectKey: match.key };
+      }
+    }
+  }
+
+  if (params.command) {
+    for (const [key, cfg] of getProjectEntries()) {
+      if (!commandTargetsProject(params.command, cfg.path)) continue;
+      if (projectRuleAppliesToBash(params.command, 'confirm_bash_deploy') ||
+          projectRuleAppliesToBash(params.command, 'confirm_bash_publish') ||
+          projectRuleAppliesToBash(params.command, 'confirm_bash_finance')) {
+        return { required: true, operationType: 'bash.high_risk', projectKey: key };
+      }
+    }
+
+    if (/\bopenclaw\s+config\s+set\b/i.test(params.command) && /\bgateway\.|channels\.bluebubbles\./i.test(params.command)) {
+      return { required: true, operationType: 'openclaw.config.mutation', projectKey: 'oic_venture_openclaw' };
+    }
+  }
+
+  return { required: false };
+}
+
+async function verifyLocalHitlApproval(params: {
+  sessionId: string;
+  operationType: string;
+  target: string;
+  projectKey?: string;
+}): Promise<{ ok: boolean; reason?: string }> {
+  const hitlRequired = String(process.env.HITL_REQUIRED ?? '').trim().toLowerCase() === 'true';
+  if (!hitlRequired) return { ok: true };
+
+  const baseUrl = (process.env.PAI_API_BASE_URL || 'http://127.0.0.1:8080').replace(/\/+$/, '');
+  const endpoint = process.env.HITL_APPROVAL_ENDPOINT || '/v1/approvals/verify';
+  const apiToken = process.env.PAI_API_TOKEN || '';
+  const approvalToken = process.env.PAI_HITL_TEST_APPROVAL_TOKEN || '';
+  const actorEmail = process.env.PAI_ACTOR_EMAIL || 'justice@example.local';
+
+  if (!approvalToken) {
+    return { ok: false, reason: 'HITL_REQUIRED=true but PAI_HITL_TEST_APPROVAL_TOKEN is not set' };
+  }
+
+  try {
+    const requestedAt = new Date().toISOString();
+    const payloadHash = `sha256:${Buffer.from(params.target).toString('hex').slice(0, 64)}`;
+    const timeoutSignal = (AbortSignal as typeof AbortSignal & {
+      timeout?: (ms: number) => AbortSignal;
+    }).timeout?.(1500);
+    const res = await fetch(`${baseUrl}${endpoint}`, {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        ...(apiToken ? { authorization: `Bearer ${apiToken}` } : {}),
+      },
+      ...(timeoutSignal ? { signal: timeoutSignal } : {}),
+      body: JSON.stringify({
+        operation_id: `${params.sessionId}:${Date.now()}`,
+        operation_type: params.operationType,
+        actor_email: actorEmail,
+        payload_hash: payloadHash,
+        requested_at: requestedAt,
+        approval_token: approvalToken,
+        project_key: params.projectKey,
+      }),
+    });
+
+    if (!res.ok) {
+      return { ok: false, reason: `HITL verification failed: HTTP ${res.status}` };
+    }
+
+    const body = (await res.json()) as Record<string, unknown>;
+    if (body.approved !== true) {
+      return { ok: false, reason: `HITL denied: ${String(body.reason ?? 'approval not granted')}` };
+    }
+    if (typeof body.approval_id !== 'string' || !body.approval_id) {
+      return { ok: false, reason: 'HITL failed: missing approval_id' };
+    }
+    if (typeof body.expires_at !== 'string' || !body.expires_at) {
+      return { ok: false, reason: 'HITL failed: missing expires_at' };
+    }
+    if (new Date(body.expires_at).getTime() <= Date.now()) {
+      return { ok: false, reason: 'HITL failed: approval already expired' };
+    }
+
+    return { ok: true };
+  } catch (error) {
+    return { ok: false, reason: `HITL verification error: ${String(error)}` };
+  }
+}
+
+async function maybeEnforceHitlForTool(params: {
+  input: HookInput;
+  tool: 'Bash' | 'Edit' | 'Write';
+  command?: string;
+  filePath?: string;
+}): Promise<{ ok: true } | { ok: false; reason: string }> {
+  const classified = classifyHitlOperation({
+    tool: params.tool,
+    command: params.command,
+    filePath: params.filePath,
+  });
+
+  if (!classified.required || !classified.operationType) {
+    return { ok: true };
+  }
+
+  const target = params.command ?? params.filePath ?? '';
+  const hitl = await verifyLocalHitlApproval({
+    sessionId: params.input.session_id,
+    operationType: classified.operationType,
+    target,
+    projectKey: classified.projectKey,
+  });
+
+  if (!hitl.ok) {
+    return { ok: false, reason: hitl.reason ?? 'HITL verification failed' };
+  }
+
+  return { ok: true };
+}
+
 // ========================================
 // Bash Command Validation
 // ========================================
 
 function validateBashCommand(command: string): { action: 'allow' | 'block' | 'confirm' | 'alert'; reason?: string } {
+  const openclawCheck = validateOpenClawBashCommand(command);
+  if (openclawCheck.action === 'block' || openclawCheck.action === 'confirm' || openclawCheck.action === 'alert') {
+    return openclawCheck;
+  }
+
+  const projectCheck = applyProjectBashRules(command);
+  if (projectCheck.action === 'block' || projectCheck.action === 'confirm' || projectCheck.action === 'alert') {
+    return projectCheck;
+  }
+
   const patterns = loadPatterns();
 
   // Check blocked patterns (hard block)
@@ -362,6 +717,18 @@ function validatePath(filePath: string, action: PathAction): { action: 'allow' |
     }
   }
 
+  // OpenClaw-specific path handling (stricter messages + credentials protection)
+  const openclawCheck = validateOpenClawPath(filePath, action);
+  if (openclawCheck.action === 'block' || openclawCheck.action === 'confirm') {
+    return openclawCheck;
+  }
+
+  // Project-specific path handling (8-domain dogfooding profile)
+  const projectCheck = applyProjectPathRules(filePath, action);
+  if (projectCheck.action === 'block' || projectCheck.action === 'confirm') {
+    return projectCheck;
+  }
+
   // Check confirmWrite (can read, writing requires confirmation)
   if (action === 'write') {
     for (const p of patterns.paths.confirmWrite) {
@@ -387,7 +754,7 @@ function validatePath(filePath: string, action: PathAction): { action: 'allow' |
 // Tool-Specific Handlers
 // ========================================
 
-function handleBash(input: HookInput): void {
+async function handleBash(input: HookInput): Promise<void> {
   const rawCommand = typeof input.tool_input === 'string'
     ? input.tool_input
     : (input.tool_input?.command as string) || '';
@@ -400,6 +767,25 @@ function handleBash(input: HookInput): void {
   // Normalize: strip env var prefixes to prevent bypass (e.g., LANG=C rm -rf /)
   const command = stripEnvVarPrefix(rawCommand);
   const result = validateBashCommand(command);
+
+  if (result.action !== 'block') {
+    const hitl = await maybeEnforceHitlForTool({ input, tool: 'Bash', command });
+    if (!hitl.ok) {
+      logSecurityEvent({
+        timestamp: new Date().toISOString(),
+        session_id: input.session_id,
+        event_type: 'block',
+        tool: 'Bash',
+        category: 'bash_command',
+        target: command.slice(0, 500),
+        reason: hitl.reason,
+        action_taken: 'Hard block - HITL verification failed/denied',
+      });
+      console.error(`[PAI SECURITY] 🚨 BLOCKED (HITL): ${hitl.reason}`);
+      console.error(`Command: ${command.slice(0, 100)}`);
+      process.exit(2);
+    }
+  }
 
   switch (result.action) {
     case 'block':
@@ -456,7 +842,7 @@ function handleBash(input: HookInput): void {
   }
 }
 
-function handleEdit(input: HookInput): void {
+async function handleEdit(input: HookInput): Promise<void> {
   const filePath = typeof input.tool_input === 'string'
     ? input.tool_input
     : (input.tool_input?.file_path as string) || '';
@@ -467,6 +853,25 @@ function handleEdit(input: HookInput): void {
   }
 
   const result = validatePath(filePath, 'write');
+
+  if (result.action !== 'block') {
+    const hitl = await maybeEnforceHitlForTool({ input, tool: 'Edit', filePath });
+    if (!hitl.ok) {
+      logSecurityEvent({
+        timestamp: new Date().toISOString(),
+        session_id: input.session_id,
+        event_type: 'block',
+        tool: 'Edit',
+        category: 'path_access',
+        target: filePath,
+        reason: hitl.reason,
+        action_taken: 'Hard block - HITL verification failed/denied',
+      });
+      console.error(`[PAI SECURITY] 🚨 BLOCKED (HITL): ${hitl.reason}`);
+      console.error(`Path: ${filePath}`);
+      process.exit(2);
+    }
+  }
 
   switch (result.action) {
     case 'block':
@@ -507,7 +912,7 @@ function handleEdit(input: HookInput): void {
   }
 }
 
-function handleWrite(input: HookInput): void {
+async function handleWrite(input: HookInput): Promise<void> {
   const filePath = typeof input.tool_input === 'string'
     ? input.tool_input
     : (input.tool_input?.file_path as string) || '';
@@ -518,6 +923,25 @@ function handleWrite(input: HookInput): void {
   }
 
   const result = validatePath(filePath, 'write');
+
+  if (result.action !== 'block') {
+    const hitl = await maybeEnforceHitlForTool({ input, tool: 'Write', filePath });
+    if (!hitl.ok) {
+      logSecurityEvent({
+        timestamp: new Date().toISOString(),
+        session_id: input.session_id,
+        event_type: 'block',
+        tool: 'Write',
+        category: 'path_access',
+        target: filePath,
+        reason: hitl.reason,
+        action_taken: 'Hard block - HITL verification failed/denied',
+      });
+      console.error(`[PAI SECURITY] 🚨 BLOCKED (HITL): ${hitl.reason}`);
+      console.error(`Path: ${filePath}`);
+      process.exit(2);
+    }
+  }
 
   switch (result.action) {
     case 'block':
@@ -558,7 +982,7 @@ function handleWrite(input: HookInput): void {
   }
 }
 
-function handleRead(input: HookInput): void {
+async function handleRead(input: HookInput): Promise<void> {
   const filePath = typeof input.tool_input === 'string'
     ? input.tool_input
     : (input.tool_input?.file_path as string) || '';
@@ -640,17 +1064,17 @@ async function main(): Promise<void> {
   // Route to appropriate handler
   switch (input.tool_name) {
     case 'Bash':
-      handleBash(input);
+      await handleBash(input);
       break;
     case 'Edit':
     case 'MultiEdit':
-      handleEdit(input);
+      await handleEdit(input);
       break;
     case 'Write':
-      handleWrite(input);
+      await handleWrite(input);
       break;
     case 'Read':
-      handleRead(input);
+      await handleRead(input);
       break;
     default:
       // Allow all other tools
